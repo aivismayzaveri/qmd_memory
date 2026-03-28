@@ -1,0 +1,67 @@
+# Memory directory
+memory_dir: "/a0/usr/memory"
+
+# Schema version (for future migrations)
+schema_version: 1
+
+# Recall settings
+memory_recall_enabled: true
+memory_recall_delayed: false
+memory_recall_interval: 3
+memory_recall_history_len: 10000
+memory_recall_max_results: 8
+memory_recall_query_prep: false
+memory_recall_token_budget: 3000
+
+# Extraction settings
+memory_extract_enabled: true
+memory_extract_min_chars: 200
+memory_extract_min_tool_calls: 2
+memory_extract_categories:
+  - entities
+  - episodes
+  - facts
+  - knowledge
+  - procedure
+  - goals
+
+# Entity deduplication
+entity_dedup_enabled: true
+
+# Auto-split large category files
+auto_split_threshold_lines: 500
+
+# Staleness tracking
+staleness_enabled: true
+
+# Guardrails
+guardrails_enabled: true
+
+# QMD settings
+qmd_engine_dir: ""
+qmd_reindex_delay_ms: 500
+qmd_search_limit: 10
+qmd_timeout_sec: 10
+
+# Parallel operation with legacy _memory plugin
+disable_legacy_memory: false
+
+# Per-agent memory isolation
+# When true, sub-agents (agent_1, agent_2...) get their own memory subfolder
+memory_per_agent: false
+
+# Temporal decay on recall — recent memories rank higher
+memory_temporal_decay_enabled: true
+memory_temporal_decay_halflife_days: 30
+
+# MMR diversity filter — prevents duplicate snippets in recall
+memory_mmr_enabled: true
+memory_mmr_lambda: 0.7
+
+# Pre-compaction reminder — warn agent to save memories when context grows large
+memory_precompact_enabled: true
+memory_precompact_threshold_chars: 40000
+
+# Extra paths to index in QMD (in addition to memory_dir)
+# Example: ["/a0/docs", "/a0/my-project/docs"]
+memory_extra_paths: []
