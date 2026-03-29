@@ -8,6 +8,7 @@ from helpers.log import LogItem
 
 from usr.plugins.qmd_memory.helpers import memory_files, qmd_client, session_log
 from usr.plugins.qmd_memory.helpers.session_log import count_user_chars
+from usr.plugins.qmd_memory.helpers.entity_linker import get_entity_linker
 
 
 class ExtractMemories(Extension):
@@ -89,7 +90,7 @@ class ExtractMemories(Extension):
                 return
 
             # Process each category
-            categories = config.get("memory_extract_categories", ["entities", "episodes", "facts", "knowledge", "procedure", "goals"])
+            categories = config.get("memory_extract_categories", ["entities", "episodes", "facts", "knowledge", "procedure", "goals", "guardrails"])
             saved = []
 
             for category in categories:
@@ -108,9 +109,11 @@ class ExtractMemories(Extension):
                         elif category == "episodes":
                             self._process_episode(entry, epoch, memory_dir)
                         elif category == "procedure":
-                            self._process_procedure(entry, epoch, memory_dir)
+                            self._process_procedure(entry, epoch, memory_dir, config)
                         elif category == "goals":
                             self._process_goal(entry, epoch, memory_dir)
+                        elif category == "guardrails":
+                            self._process_guardrail(entry, memory_dir)
                         saved.append(category)
                     except Exception as e:
                         PrintStyle.warning(f"[QMD Memory] Error processing {category}: {e}")
@@ -147,11 +150,28 @@ class ExtractMemories(Extension):
             return
 
         if config.get("entity_dedup_enabled", True):
-            subfile, existing = memory_files.find_entity(memory_dir, name)
-            if subfile:
-                new_context = entry.get("context", "")
-                memory_files.update_entity(memory_dir, name, new_context, epoch)
+            context = entry.get("context", "")
+            entity_type = entry.get("type", "")
+
+            # Tier 1: fuzzy string match (catches case variants, partial names).
+            # Returns canonical_name — the name as stored in the file.
+            fuzzy_threshold = int(config.get("entity_fuzzy_threshold", 82))
+            subfile, existing, canonical_name = memory_files.find_entity_fuzzy(
+                memory_dir, name, threshold=fuzzy_threshold
+            )
+
+            if subfile and canonical_name:
+                memory_files.update_entity(memory_dir, canonical_name, context, epoch)
                 return
+
+            # Tier 2: GLinker semantic linking (catches "aivismayzaveri" → "Vismay Zaveri").
+            # Only runs if entity_glinker_enabled: true in config.
+            linker = get_entity_linker(memory_dir, config)
+            if linker:
+                canonical_name, confidence = linker.find_canonical(name, context, entity_type)
+                if canonical_name:
+                    memory_files.update_entity(memory_dir, canonical_name, context, epoch)
+                    return
 
         memory_files.append_entity(memory_dir, entry, epoch)
 
@@ -165,29 +185,33 @@ class ExtractMemories(Extension):
         if not content:
             return
 
-        # Contradiction check via QMD similarity search
-        try:
-            results = qmd_client.search(content, config, limit=3)
-            for r in results:
-                path = r.get("path", "")
-                score = float(r.get("score", 0))
-                if "Facts" in path and score > 0.85:
-                    snippet = r.get("snippet", "")
-                    existing_heading = _extract_heading_from_snippet(snippet)
-                    if existing_heading and memory_files.find_entry(memory_dir, "facts", existing_heading):
-                        memory_files.update_entry(memory_dir, "facts", existing_heading, content)
-                        return
-        except Exception:
-            pass  # Graceful — just append on any error
-
         fact_category = entry.get("category", "general")
-        # "knowledge" category facts go to Knowledge.md via the knowledge processor — skip here
         if fact_category == "knowledge":
             self._process_knowledge(
                 {"title": content[:60].rstrip(), "content": content, "source": ""},
                 epoch, memory_dir
             )
             return
+
+        # Dedup: line-by-line scan of the existing facts file.
+        # The old approach (QMD search > 0.85 against the whole file) never worked
+        # because a single new bullet line scores far below 0.85 against 200+ lines.
+        try:
+            existing_text = memory_files.read_category(memory_dir, "facts")
+            content_norm = content.lower().rstrip(".")
+            for line in existing_text.splitlines():
+                # Skip metadata lines and headings
+                line_clean = line.strip().lstrip("- ").lower().rstrip(".")
+                if not line_clean or line_clean.startswith("#") or line_clean.startswith("**updated") or line_clean.startswith("_ref"):
+                    continue
+                # Skip YAML frontmatter lines
+                if line_clean.startswith("schema_version") or line_clean.startswith("type:") or line_clean.startswith("last_updated"):
+                    continue
+                # Substring match in either direction catches paraphrases and exact duplicates
+                if content_norm in line_clean or line_clean in content_norm:
+                    return  # Already stored
+        except Exception:
+            pass  # Graceful — append on any error
 
         section_map = {
             "user_preference": "User Preferences",
@@ -263,7 +287,7 @@ class ExtractMemories(Extension):
         )
         memory_files.append_to_category(memory_dir, "episodes", episode_text, "")
 
-    def _process_procedure(self, entry: dict, epoch: str, memory_dir: str):
+    def _process_procedure(self, entry: dict, epoch: str, memory_dir: str, config: dict = None):
         if not isinstance(entry, dict):
             return
         title = entry.get("title", "Procedure").strip()
@@ -271,6 +295,23 @@ class ExtractMemories(Extension):
         steps = entry.get("steps", [])
         entities = entry.get("entities", [])
         today = memory_files._now_iso()
+
+        # Dedup: exact heading match first
+        if memory_files.find_entry(memory_dir, "procedure", title):
+            return
+
+        # Dedup: QMD similarity against procedure category only (catches same procedure
+        # with a different title, which is the main failure mode here)
+        if config:
+            try:
+                search_query = f"{title} {problem}"[:120]
+                results = qmd_client.search(search_query, config, limit=3)
+                for r in results:
+                    if "procedure" in r.get("path", "").lower() or "Procedure" in r.get("file", ""):
+                        if float(r.get("score", 0)) > 0.75:
+                            return  # Near-identical procedure already exists
+            except Exception:
+                pass
 
         steps_text = "\n".join([f"  {i+1}. {s}" for i, s in enumerate(steps)])
         proc_text = (
@@ -291,22 +332,59 @@ class ExtractMemories(Extension):
         description = entry.get("description", "")
         today = memory_files._now_iso()
 
+        # Goals are stored as bullet points ("- [ ] **Title** — desc"), NOT as ## headings.
+        # find_entry() searches for ## headings and will NEVER find a goal.
+        # Scan the raw file content for the title pattern instead.
+        goals_text = memory_files.read_category(memory_dir, "goals")
+        title_pattern = re.compile(rf'\*\*{re.escape(title)}\*\*', re.IGNORECASE)
+        if title_pattern.search(goals_text):
+            # Goal already exists. If completing, rewrite the line to checked.
+            if status == "completed":
+                memory_files.mark_goal_completed(memory_dir, title, today, epoch)
+            return
+
         checkbox = "[x]" if status == "completed" else "[ ]"
         goal_text = (
             f"- {checkbox} **{title}** — {description}\n"
             f"  _Updated: {today}. Ref: [session](sessions/{epoch}.md)_"
         )
-
-        existing = memory_files.find_entry(memory_dir, "goals", title)
-        if existing:
-            memory_files.update_entry(
-                memory_dir, "goals", title,
-                f"{'**Status:** completed' if status == 'completed' else '**Status:** active'}\n{description}"
-            )
-            return
-
         section = "Completed" if status == "completed" else "Active"
         memory_files.append_to_section(memory_dir, "goals", section, goal_text)
+
+
+    def _process_guardrail(self, entry: dict, memory_dir: str):
+        """
+        Append a guardrail entry to the appropriate ## section in Guardrails.md.
+        Skips if near-identical content already exists to prevent duplication.
+        """
+        if not isinstance(entry, dict):
+            return
+        section = entry.get("section", "Other").strip()
+        content = entry.get("content", "").strip()
+        if not content:
+            return
+
+        # Valid sections — normalize input to closest match
+        valid_sections = ["Identity", "Interaction Preferences", "Code Style", "Security", "Reminders", "Other"]
+        matched_section = next(
+            (s for s in valid_sections if s.lower() == section.lower()),
+            "Other"
+        )
+
+        # Dedup: skip if the same or very similar content already exists in Guardrails.md
+        existing = memory_files.get_guardrails_text(memory_dir)
+        content_norm = content.lower().rstrip(".")
+        for line in existing.splitlines():
+            line_clean = line.strip().lstrip("- ").lower().rstrip(".")
+            if not line_clean:
+                continue
+            # Substring match in either direction covers paraphrases and exact duplicates
+            if content_norm in line_clean or line_clean in content_norm:
+                return
+
+        today = memory_files._now_iso()
+        guardrail_line = f"- {content}\n  - _Updated: {today}_"
+        memory_files.append_to_section(memory_dir, "guardrails", matched_section, guardrail_line)
 
 
 def _extract_heading_from_snippet(snippet: str) -> str:

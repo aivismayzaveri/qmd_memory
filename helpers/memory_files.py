@@ -8,9 +8,38 @@ Uses atomic writes (write-to-temp → rename) to prevent corruption.
 import os
 import re
 import tempfile
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+# Per-file threading locks — prevent read-modify-write races between
+# concurrent background tasks (extraction, recall, tool calls).
+# Each file gets its own lock so unrelated files can be written in parallel.
+# Bounded to _MAX_LOCKS entries to prevent unbounded memory growth.
+_file_locks: dict[str, threading.Lock] = {}
+_file_locks_mutex = threading.Lock()
+_MAX_LOCKS = 200
+
+
+def _get_file_lock(path: Path) -> threading.Lock:
+    """Return a per-file threading lock, creating one if needed."""
+    key = str(path.resolve())
+    with _file_locks_mutex:
+        if key not in _file_locks:
+            # Evict oldest entries if at capacity
+            if len(_file_locks) >= _MAX_LOCKS:
+                # Remove locks that aren't currently held
+                to_remove = []
+                for k, lock in _file_locks.items():
+                    if not lock.locked():
+                        to_remove.append(k)
+                    if len(_file_locks) - len(to_remove) < _MAX_LOCKS // 2:
+                        break
+                for k in to_remove:
+                    del _file_locks[k]
+            _file_locks[key] = threading.Lock()
+        return _file_locks[key]
 
 # Map category names to their file paths (relative to memory_dir)
 CATEGORY_FILES = {
@@ -160,7 +189,7 @@ last_updated: "{now}"
         "Knowledge.md": ("knowledge", "# Knowledge\n"),
         "Procedure.md": ("procedure", "# Procedures\n"),
         "Goals.md": ("goals", "# Goals\n\n## Active\n\n## Completed\n"),
-        "Guardrails.md": ("guardrails", "# Guardrails\n\n## Security\n\n## Interaction Preferences\n\n## Code Style\n"),
+        "Guardrails.md": ("guardrails", "# Guardrails\n\n## Identity\n\n## Interaction Preferences\n\n## Code Style\n\n## Security\n\n## Reminders\n\n## Other\n"),
     }
     for filename, (cat_type, body) in category_defs.items():
         f = base / filename
@@ -237,20 +266,18 @@ def append_to_category(memory_dir: str, category: str, content: str, epoch: str 
 
     path = _category_path(memory_dir, category)
     if path.is_dir():
-        # Already split — append to the matching section's sub-file or default
         _append_to_split_dir(path, content, epoch)
         return
 
-    existing = _read_file(path)
-    # Add Updated timestamp if not present
-    if epoch and "Updated:" not in content:
-        content = content.rstrip() + f"\n- **Updated:** {_now_iso()}"
-    if epoch and "Ref:" not in content:
-        content = content.rstrip() + f"\n- _Ref: [session](sessions/{epoch}.md)_"
-
-    new_content = existing.rstrip() + "\n\n" + content.strip() + "\n"
-    new_content = _update_frontmatter_timestamp(new_content)
-    _atomic_write(path, new_content)
+    with _get_file_lock(path):
+        existing = _read_file(path)
+        if epoch and "Updated:" not in content:
+            content = content.rstrip() + f"\n- **Updated:** {_now_iso()}"
+        if epoch and "Ref:" not in content:
+            content = content.rstrip() + f"\n- _Ref: [session](sessions/{epoch}.md)_"
+        new_content = existing.rstrip() + "\n\n" + content.strip() + "\n"
+        new_content = _update_frontmatter_timestamp(new_content)
+        _atomic_write(path, new_content)
 
 
 def append_to_section(memory_dir: str, category: str, section_heading: str, line: str) -> None:
@@ -267,23 +294,21 @@ def append_to_section(memory_dir: str, category: str, section_heading: str, line
         _append_to_split_dir(path, line, "")
         return
 
-    content = _read_file(path)
-    heading_pattern = re.compile(
-        rf'^(## {re.escape(section_heading)}\s*\n)(.*?)(?=^## |\Z)',
-        re.MULTILINE | re.DOTALL,
-    )
-    match = heading_pattern.search(content)
-    if match:
-        # Insert the new line at the end of the section body
-        section_body = match.group(2).rstrip()
-        replacement = match.group(1) + (section_body + "\n" if section_body else "") + line.strip() + "\n\n"
-        new_content = content[:match.start()] + replacement + content[match.end():]
-    else:
-        # Section doesn't exist — append heading + content
-        new_content = content.rstrip() + f"\n\n## {section_heading}\n{line.strip()}\n"
-
-    new_content = _update_frontmatter_timestamp(new_content)
-    _atomic_write(path, new_content)
+    with _get_file_lock(path):
+        content = _read_file(path)
+        heading_pattern = re.compile(
+            rf'^(## {re.escape(section_heading)}\s*\n)(.*?)(?=^## |\Z)',
+            re.MULTILINE | re.DOTALL,
+        )
+        match = heading_pattern.search(content)
+        if match:
+            section_body = match.group(2).rstrip()
+            replacement = match.group(1) + (section_body + "\n" if section_body else "") + line.strip() + "\n\n"
+            new_content = content[:match.start()] + replacement + content[match.end():]
+        else:
+            new_content = content.rstrip() + f"\n\n## {section_heading}\n{line.strip()}\n"
+        new_content = _update_frontmatter_timestamp(new_content)
+        _atomic_write(path, new_content)
 
 
 def _append_to_split_dir(dir_path: Path, content: str, epoch: str) -> None:
@@ -315,35 +340,136 @@ def append_entity(memory_dir: str, entity: dict, epoch: str = "") -> None:
 - **Updated:** {_now_iso()}
 - **Sessions:** [{epoch}](../sessions/{epoch}.md)
 """
-    existing = _read_file(subfile)
-    new_content = existing.rstrip() + "\n" + entry.strip() + "\n"
-    new_content = _update_frontmatter_timestamp(new_content)
-    _atomic_write(subfile, new_content)
+    with _get_file_lock(subfile):
+        existing = _read_file(subfile)
+        new_content = existing.rstrip() + "\n" + entry.strip() + "\n"
+        new_content = _update_frontmatter_timestamp(new_content)
+        _atomic_write(subfile, new_content)
 
-    # Update index
+    _invalidate_entity_cache(memory_dir)
     _update_entity_index(memory_dir, name, entity_type, subtype)
 
 
 def _update_entity_index(memory_dir: str, name: str, entity_type: str, subtype: str) -> None:
     """Add or update entity in _index.md."""
     index_path = Path(memory_dir) / "entities" / "_index.md"
-    content = _read_file(index_path)
     today = _now_iso()
     new_row = f"| {name} | {entity_type} | {subtype}.md | {today} |"
 
-    # Check if entity already in index
-    if f"| {name} |" in content:
-        # Update existing row
-        content = re.sub(
-            rf'\| {re.escape(name)} \|.*',
-            new_row,
-            content,
-        )
-    else:
-        content = content.rstrip() + "\n" + new_row + "\n"
+    with _get_file_lock(index_path):
+        content = _read_file(index_path)
+        if f"| {name} |" in content:
+            content = re.sub(
+                rf'\| {re.escape(name)} \|.*',
+                new_row,
+                content,
+            )
+        else:
+            content = content.rstrip() + "\n" + new_row + "\n"
+        content = _update_frontmatter_timestamp(content)
+        _atomic_write(index_path, content)
 
-    content = _update_frontmatter_timestamp(content)
-    _atomic_write(index_path, content)
+
+# Entity name cache — avoids O(n) full-scan on every dedup check.
+# Invalidated when entity files are modified (via append_entity / update_entity).
+_entity_name_cache: dict[str, dict[str, str]] = {}  # memory_dir → {name: subfile_path}
+_entity_cache_lock = threading.Lock()
+
+
+def _invalidate_entity_cache(memory_dir: str) -> None:
+    """Clear the entity name cache for a memory directory."""
+    key = str(Path(memory_dir).resolve())
+    with _entity_cache_lock:
+        _entity_name_cache.pop(key, None)
+
+
+def list_all_entity_names(memory_dir: str) -> dict[str, str]:
+    """Return {entity_name: subfile_path} for every ## heading in all entity subfiles.
+    Results are cached and invalidated on entity writes."""
+    key = str(Path(memory_dir).resolve())
+    with _entity_cache_lock:
+        if key in _entity_name_cache:
+            return dict(_entity_name_cache[key])
+
+    entities_dir = Path(memory_dir) / "entities"
+    result: dict[str, str] = {}
+    for subfile in entities_dir.glob("*.md"):
+        if subfile.name == "_index.md":
+            continue
+        content = _read_file(subfile)
+        for match in re.finditer(r'^## (.+)$', content, re.MULTILINE):
+            name = match.group(1).strip()
+            result[name] = str(subfile)
+
+    with _entity_cache_lock:
+        _entity_name_cache[key] = dict(result)
+    return result
+
+
+def _fuzzy_score(a: str, b: str) -> float:
+    """
+    Return 0–100 similarity score between two entity name strings.
+
+    Uses token_sort_ratio as the base (handles word-order differences and
+    character overlap like "aivismayzaveri" ↔ "Vismay Zaveri" = 89).
+
+    Additionally gives a 90-point score for whole-word substring containment,
+    which catches first-name-only matches ("vismay" ↔ "Vismay Zaveri").
+    """
+    a_lower, b_lower = a.lower(), b.lower()
+
+    # Whole-word substring: "vismay" inside "vismay zaveri" — score 90
+    a_words = set(a_lower.split())
+    b_words = set(b_lower.split())
+    if a_words and b_words and (a_words.issubset(b_words) or b_words.issubset(a_words)):
+        return 90.0
+
+    try:
+        from rapidfuzz import fuzz
+        return float(fuzz.token_sort_ratio(a_lower, b_lower))
+    except ImportError:
+        from difflib import SequenceMatcher
+        return SequenceMatcher(None, a_lower, b_lower).ratio() * 100
+
+
+def find_entity_fuzzy(
+    memory_dir: str,
+    name: str,
+    threshold: int = 82,
+) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """
+    Find an entity with fuzzy name matching as fallback to exact match.
+
+    Returns (subfile_path, entry_content, canonical_name).
+    canonical_name is the name as stored in the file (may differ from input).
+    All three are None if no match found above threshold.
+
+    Tier 1: exact case-insensitive match (current behaviour)
+    Tier 2: rapidfuzz token_sort_ratio (catches "vismay" → "Vismay Zaveri",
+             case variants, partial names, minor typos)
+    """
+    # Tier 1: exact
+    subfile, entry = find_entity(memory_dir, name)
+    if subfile:
+        return subfile, entry, name
+
+    # Tier 2: fuzzy
+    all_names = list_all_entity_names(memory_dir)
+    if not all_names:
+        return None, None, None
+
+    best_name, best_score = None, 0.0
+    for existing_name in all_names:
+        score = _fuzzy_score(name, existing_name)
+        if score > best_score:
+            best_score, best_name = score, existing_name
+
+    if best_score >= threshold and best_name:
+        subfile, entry = find_entity(memory_dir, best_name)
+        if subfile:
+            return subfile, entry, best_name
+
+    return None, None, None
 
 
 def find_entity(memory_dir: str, name: str) -> tuple[Optional[str], Optional[str]]:
@@ -380,23 +506,23 @@ def update_entity(memory_dir: str, name: str, new_context: str, new_epoch: str =
         return False
 
     subfile = Path(subfile_path)
-    content = _read_file(subfile)
-
-    # Update the entry block
     today = _now_iso()
-    updated_entry = re.sub(
-        r'\*\*Context:\*\*.*',
-        f'**Context:** {new_context}',
-        existing_entry,
-    )
-    updated_entry = re.sub(
-        r'\*\*Updated:\*\*.*',
-        f'**Updated:** {today}',
-        updated_entry,
-    )
-    if new_epoch:
-        # Add session backlink if not already there
-        if f"sessions/{new_epoch}.md" not in updated_entry:
+
+    with _get_file_lock(subfile):
+        content = _read_file(subfile)
+        # Re-find the entry under the lock to get current state
+        match = re.search(
+            rf'^## {re.escape(name)}.*?(?=^## |\Z)',
+            content,
+            re.MULTILINE | re.DOTALL | re.IGNORECASE,
+        )
+        if not match:
+            return False
+        existing_entry = match.group(0)
+
+        updated_entry = re.sub(r'\*\*Context:\*\*.*', f'**Context:** {new_context}', existing_entry)
+        updated_entry = re.sub(r'\*\*Updated:\*\*.*', f'**Updated:** {today}', updated_entry)
+        if new_epoch and f"sessions/{new_epoch}.md" not in updated_entry:
             updated_entry = re.sub(
                 r'(\*\*Sessions:\*\*.*)',
                 rf'\1, [{new_epoch}](../sessions/{new_epoch}.md)',
@@ -405,15 +531,16 @@ def update_entity(memory_dir: str, name: str, new_context: str, new_epoch: str =
             if "**Sessions:**" not in updated_entry:
                 updated_entry += f"\n- **Sessions:** [{new_epoch}](../sessions/{new_epoch}.md)"
 
-    # Replace in file
-    new_content = re.sub(
-        rf'^## {re.escape(name)}.*?(?=^## |\Z)',
-        updated_entry.strip() + "\n\n",
-        content,
-        flags=re.MULTILINE | re.DOTALL | re.IGNORECASE,
-    )
-    new_content = _update_frontmatter_timestamp(new_content)
-    _atomic_write(subfile, new_content)
+        new_content = re.sub(
+            rf'^## {re.escape(name)}.*?(?=^## |\Z)',
+            updated_entry.strip() + "\n\n",
+            content,
+            flags=re.MULTILINE | re.DOTALL | re.IGNORECASE,
+        )
+        new_content = _update_frontmatter_timestamp(new_content)
+        _atomic_write(subfile, new_content)
+
+    _invalidate_entity_cache(memory_dir)
     return True
 
 
@@ -432,25 +559,25 @@ def update_entry(memory_dir: str, category: str, heading: str, new_content_body:
     """
     path = _category_path(memory_dir, category)
     if path.is_dir():
-        # Search across sub-files
         for subfile in path.glob("*.md"):
             if subfile.name == "_index.md":
                 continue
-            content = _read_file(subfile)
-            if re.search(rf'^## {re.escape(heading)}\s*$', content, re.MULTILINE | re.IGNORECASE):
-                new_file_content = _replace_entry_in_content(content, heading, new_content_body)
-                new_file_content = _update_frontmatter_timestamp(new_file_content)
-                _atomic_write(subfile, new_file_content)
-                return True
+            with _get_file_lock(subfile):
+                content = _read_file(subfile)
+                if re.search(rf'^## {re.escape(heading)}\s*$', content, re.MULTILINE | re.IGNORECASE):
+                    new_file_content = _replace_entry_in_content(content, heading, new_content_body)
+                    new_file_content = _update_frontmatter_timestamp(new_file_content)
+                    _atomic_write(subfile, new_file_content)
+                    return True
         return False
 
-    content = _read_file(path)
-    if not re.search(rf'^## {re.escape(heading)}\s*$', content, re.MULTILINE | re.IGNORECASE):
-        return False
-
-    new_file_content = _replace_entry_in_content(content, heading, new_content_body)
-    new_file_content = _update_frontmatter_timestamp(new_file_content)
-    _atomic_write(path, new_file_content)
+    with _get_file_lock(path):
+        content = _read_file(path)
+        if not re.search(rf'^## {re.escape(heading)}\s*$', content, re.MULTILINE | re.IGNORECASE):
+            return False
+        new_file_content = _replace_entry_in_content(content, heading, new_content_body)
+        new_file_content = _update_frontmatter_timestamp(new_file_content)
+        _atomic_write(path, new_file_content)
     return True
 
 
@@ -542,6 +669,57 @@ last_updated: "{now}"
     return True
 
 
+def mark_goal_completed(memory_dir: str, title: str, today: str = "", epoch: str = "") -> bool:
+    """
+    Find a goal by its **title** in Goals.md and mark it as [x] completed.
+    Moves it from Active to Completed section if needed.
+    Returns True if found and updated.
+    """
+    if not today:
+        today = _now_iso()
+    path = _category_path(memory_dir, "goals")
+    if path.is_dir():
+        return False  # Split files not supported for goal completion
+
+    with _get_file_lock(path):
+        content = _read_file(path)
+        # Find the goal line by **title** pattern
+        pattern = re.compile(
+            rf'^([ \t]*- )\[[ x]\] (\*\*{re.escape(title)}\*\*.*?)$',
+            re.MULTILINE | re.IGNORECASE,
+        )
+        match = pattern.search(content)
+        if not match:
+            return False
+
+        # Replace [ ] with [x]
+        ref = f" _Updated: {today}. Ref: [session](sessions/{epoch}.md)_" if epoch else ""
+        new_line = f"{match.group(1)}[x] {match.group(2).rstrip()}"
+        new_content = content[:match.start()] + new_line + content[match.end():]
+        new_content = _update_frontmatter_timestamp(new_content)
+        _atomic_write(path, new_content)
+    return True
+
+
+def fact_exists(memory_dir: str, content: str) -> bool:
+    """
+    Check if a near-identical fact already exists in Facts.md.
+    Uses line-by-line substring matching (case-insensitive, punctuation-stripped).
+    """
+    try:
+        existing_text = read_category(memory_dir, "facts")
+        content_norm = content.lower().rstrip(".")
+        for line in existing_text.splitlines():
+            line_clean = line.strip().lstrip("- ").lower().rstrip(".")
+            if not line_clean or line_clean.startswith("#") or line_clean.startswith("**updated") or line_clean.startswith("_ref"):
+                continue
+            if content_norm in line_clean or line_clean in content_norm:
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def get_guardrails_text(memory_dir: str) -> str:
     """Read Guardrails.md and return body (frontmatter stripped)."""
     path = Path(memory_dir) / "Guardrails.md"
@@ -552,18 +730,16 @@ def get_guardrails_text(memory_dir: str) -> str:
 def write_guardrails(memory_dir: str, content: str) -> None:
     """Write new content to Guardrails.md, preserving frontmatter."""
     path = Path(memory_dir) / "Guardrails.md"
-    existing = _read_file(path)
-
-    # Extract frontmatter
-    if existing.startswith("---"):
-        end = existing.find("---", 3)
-        frontmatter = existing[: end + 3]
-    else:
-        now = datetime.now(timezone.utc).isoformat()
-        frontmatter = f'---\nschema_version: 1\ntype: guardrails\nlast_updated: "{now}"\n---'
-
-    new_file = _update_frontmatter_timestamp(frontmatter + "\n\n" + content.strip() + "\n")
-    _atomic_write(path, new_file)
+    with _get_file_lock(path):
+        existing = _read_file(path)
+        if existing.startswith("---"):
+            end = existing.find("---", 3)
+            frontmatter = existing[: end + 3]
+        else:
+            now = datetime.now(timezone.utc).isoformat()
+            frontmatter = f'---\nschema_version: 1\ntype: guardrails\nlast_updated: "{now}"\n---'
+        new_file = _update_frontmatter_timestamp(frontmatter + "\n\n" + content.strip() + "\n")
+        _atomic_write(path, new_file)
 
 
 def save_doc(memory_dir: str, title: str, content: str, source: str = "", tags: list = None) -> str:

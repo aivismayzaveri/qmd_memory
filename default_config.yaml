@@ -11,6 +11,10 @@ memory_recall_interval: 3
 memory_recall_history_len: 10000
 memory_recall_max_results: 8
 memory_recall_query_prep: false
+
+# Normalize manual memory_search tool queries via LLM before sending to QMD
+# Fixes poor results from natural-language queries with noise words
+memory_search_query_prep: true
 memory_recall_token_budget: 3000
 
 # Extraction settings
@@ -24,9 +28,24 @@ memory_extract_categories:
   - knowledge
   - procedure
   - goals
+  - guardrails
 
 # Entity deduplication
 entity_dedup_enabled: true
+
+# Tier 1: fuzzy string matching (rapidfuzz or difflib fallback)
+# Catches case variants, partial names, minor typos (e.g. "vismay" → "Vismay Zaveri")
+# threshold: 0-100, lower = more aggressive merging
+entity_fuzzy_threshold: 82
+
+# Tier 2: GLinker semantic entity linking (optional, requires: pip install glinker)
+# Catches semantically-related names with no string overlap
+# e.g. "aivismayzaveri" → "Vismay Zaveri" via stored entity descriptions
+# threshold: acceptance filter (0-1); executor runs at 0.40 internally, this filters the output
+entity_glinker_enabled: false
+entity_glinker_model: "knowledgator/gliner-linker-base-v1.0"
+entity_glinker_threshold: 0.75
+entity_glinker_device: "cpu"
 
 # Auto-split large category files
 auto_split_threshold_lines: 500

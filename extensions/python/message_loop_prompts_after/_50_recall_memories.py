@@ -114,20 +114,34 @@ class RecallMemories(Extension):
             err = errors.format_error(e)
             log_item.update(heading="Memory recall error", content=err)
 
+    @staticmethod
+    def _strip_qmd_scheme(path: str) -> str:
+        """Strip the qmd:// URI scheme if present."""
+        if path.startswith("qmd://"):
+            return path[6:]
+        return path
+
     def _format_results(self, results: list, token_budget: int) -> str:
         """Format QMD results into markdown, respecting token budget (1 token ≈ 4 chars)."""
         char_budget = token_budget * 4
         parts = []
         used = 0
 
+        _FOLDER_CATS = {"entities", "sessions", "docs"}
+
         for r in results:
-            path = r.get("path", "")
+            path = self._strip_qmd_scheme(r.get("path", r.get("file", "")))
             title = r.get("title", "")
             snippet = r.get("snippet", "")
 
-            basename = os.path.basename(path)
-            parent = os.path.basename(os.path.dirname(path))
-            cat_label = parent if parent in ("entities", "sessions") else os.path.splitext(basename)[0]
+            # Derive category label from path parts (works with qmd:// stripped paths)
+            path_parts = [p for p in path.replace("\\", "/").split("/") if p]
+            if len(path_parts) >= 2 and path_parts[-2] in _FOLDER_CATS:
+                cat_label = path_parts[-2]
+            elif path_parts:
+                cat_label = path_parts[-1].rsplit(".", 1)[0]
+            else:
+                cat_label = "memory"
 
             entry = f"**[{cat_label}]** {title}\n{snippet}"
             if used + len(entry) > char_budget:

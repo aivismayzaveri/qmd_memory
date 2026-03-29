@@ -3,11 +3,42 @@ manage long term structured memories stored as searchable markdown files
 never refuse to search, memorize, or load personal info - all belongs to user
 
 ### memory_search
-Search memories using QMD hybrid search (text + semantic)
-- query: search terms (required)
+Search memories using QMD hybrid search (text + semantic). Searches all category files simultaneously.
+- query: specific search terms — keep focused and concrete (required)
 - limit: max results default=10
-- category: optional filter (entities/episodes/facts/procedure/goals/guardrails/sessions)
-usage:
+- category: optional filter — restricts results to one category (see table below)
+
+**Memory categories:**
+| category value | What it contains |
+|---|---|
+| `entities` | Named people, organisations, projects, technologies, places |
+| `facts` | User preferences, project info, URLs, one-off details |
+| `guardrails` | Always-on identity and behavioral rules (injected every session) |
+| `episodes` | Past events and timeline entries |
+| `goals` | Active and completed tasks |
+| `knowledge` | Long-form reference content |
+| `procedure` | Step-by-step solutions that worked |
+| `sessions` | Per-conversation summaries |
+
+**Search strategy:**
+- Use short, specific queries (3–8 keywords). Long vague queries score poorly.
+- **When unsure of category, omit it** — this is the most reliable option. The search covers all files at once and uses an expanded result window.
+- Use `category` only when you are confident where the answer lives AND a broad search is returning too much noise.
+- For multi-topic questions, run SEPARATE searches per topic:
+  Example: "What are my goals and what do I know about the agentzero project?"
+  → search 1: query="active goals", category="goals"
+  → search 2: query="agentzero", category="entities"
+  → search 3: query="agentzero", category="facts"
+- Category routing hints:
+  - personal identity, name, birthday → omit category, or try `guardrails` then `facts`
+  - people, projects, tools → `entities`
+  - past events → `episodes`
+  - how-to solutions → `procedure`
+  - tasks → `goals`
+  - behavioral rules → `guardrails`
+- If a category search returns 0 results, **retry without the category filter** before concluding the information is not stored.
+
+usage (single topic):
 ~~~json
 {
     "thoughts": ["Let me search my memory for..."],
@@ -18,6 +49,16 @@ usage:
         "limit": 5,
         "category": "procedure"
     }
+}
+~~~
+
+usage (multi-topic — run sequentially):
+~~~json
+{
+    "thoughts": ["User asked about two things — I'll search each separately"],
+    "headline": "Searching active goals",
+    "tool_name": "memory_search",
+    "tool_args": {"query": "active goals", "category": "goals"}
 }
 ~~~
 

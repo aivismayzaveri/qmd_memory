@@ -165,6 +165,11 @@ def search(query: str, config: dict, limit: int = 10) -> list[dict]:
         if not isinstance(data, list):
             return []
 
+        # Normalize: QMD returns 'file' (qmd://memory/…), copy to 'path' for consumers
+        for r in data:
+            if "path" not in r and "file" in r:
+                r["path"] = r["file"]
+
         # Apply temporal decay if enabled
         if config.get("memory_temporal_decay_enabled", True):
             half_life = float(config.get("memory_temporal_decay_halflife_days", 30))

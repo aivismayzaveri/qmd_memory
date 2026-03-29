@@ -118,7 +118,7 @@ last_updated: "{now}"
         "Knowledge.md": ("knowledge", "# Knowledge\n"),
         "Procedure.md": ("procedure", "# Procedures\n"),
         "Goals.md": ("goals", "# Goals\n\n## Active\n\n## Completed\n"),
-        "Guardrails.md": ("guardrails", "# Guardrails\n\n## Security\n\n## Interaction Preferences\n\n## Code Style\n"),
+        "Guardrails.md": ("guardrails", "# Guardrails\n\n## Identity\n\n## Interaction Preferences\n\n## Code Style\n\n## Security\n\n## Reminders\n\n## Other\n"),
     }
     for filename, (cat_type, body) in categories.items():
         f = memory_dir / filename

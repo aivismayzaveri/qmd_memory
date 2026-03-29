@@ -14,7 +14,7 @@ class MemoryBrowse(Tool):
         if not config:
             return Response(message="QMD Memory plugin not configured.", break_loop=False)
 
-        valid_categories = ["entities", "episodes", "facts", "procedure", "goals", "guardrails", "sessions"]
+        valid_categories = ["entities", "episodes", "facts", "procedure", "goals", "guardrails", "sessions", "knowledge", "docs"]
         if not category:
             return Response(
                 message=f"Please specify a category. Available: {', '.join(valid_categories)}",
@@ -40,12 +40,38 @@ class MemoryBrowse(Tool):
                 lines = ["# Recent Sessions\n"]
                 for sf in session_files:
                     content = sf.read_text(encoding="utf-8")
-                    # Extract summary from frontmatter
                     import re
                     summary_match = re.search(r'^summary:\s*"?(.+?)"?\s*$', content, re.MULTILINE)
                     summary = summary_match.group(1) if summary_match else "(no summary)"
                     lines.append(f"- **{sf.stem}**: {summary}")
                 result = "\n".join(lines)
+            elif category == "docs":
+                # List imported documents
+                from pathlib import Path
+                docs_dir = Path(memory_dir) / "docs"
+                if not docs_dir.exists():
+                    return Response(message="No documents imported yet.", break_loop=False)
+                if section:
+                    # Read a specific doc file
+                    doc_file = docs_dir / section
+                    if not doc_file.exists():
+                        doc_file = docs_dir / f"{section}.md"
+                    if doc_file.exists():
+                        result = doc_file.read_text(encoding="utf-8")
+                    else:
+                        return Response(message=f"Document '{section}' not found in docs/", break_loop=False)
+                else:
+                    # List all docs from _index.md
+                    idx = docs_dir / "_index.md"
+                    if idx.exists():
+                        result = idx.read_text(encoding="utf-8")
+                    else:
+                        doc_files = sorted(docs_dir.glob("*.md"))
+                        lines = ["# Imported Documents\n"]
+                        for df in doc_files:
+                            if df.name != "_index.md":
+                                lines.append(f"- {df.name}")
+                        result = "\n".join(lines)
             elif section:
                 result = memory_files.read_category_raw(memory_dir, category, section)
             else:
