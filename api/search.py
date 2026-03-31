@@ -26,7 +26,7 @@ class Search(ApiHandler):
 
         try:
             result = subprocess.run(
-                ["node", str(QMD_CLI), "search", query, "--json", "-n", str(limit)],
+                ["node", str(QMD_CLI), "query", query, "--json", "-n", str(limit)],
                 cwd=str(QMD_DIR),
                 capture_output=True,
                 text=True,

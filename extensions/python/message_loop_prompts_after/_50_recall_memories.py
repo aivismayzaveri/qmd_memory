@@ -127,21 +127,14 @@ class RecallMemories(Extension):
         parts = []
         used = 0
 
-        _FOLDER_CATS = {"entities", "sessions", "docs"}
-
         for r in results:
             path = self._strip_qmd_scheme(r.get("path", r.get("file", "")))
             title = r.get("title", "")
             snippet = r.get("snippet", "")
 
-            # Derive category label from path parts (works with qmd:// stripped paths)
-            path_parts = [p for p in path.replace("\\", "/").split("/") if p]
-            if len(path_parts) >= 2 and path_parts[-2] in _FOLDER_CATS:
-                cat_label = path_parts[-2]
-            elif path_parts:
-                cat_label = path_parts[-1].rsplit(".", 1)[0]
-            else:
-                cat_label = "memory"
+            # Derive label: epoch-named files are sessions
+            stem = path.replace("\\", "/").rsplit("/", 1)[-1].rsplit(".", 1)[0]
+            cat_label = "session" if (stem.isdigit() and 9 <= len(stem) <= 10) else stem
 
             entry = f"**[{cat_label}]** {title}\n{snippet}"
             if used + len(entry) > char_budget:

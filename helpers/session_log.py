@@ -1,7 +1,7 @@
 """
 QMD Memory Plugin - Session Log Manager
 
-Creates LLM-summarized session log files in sessions/<epoch>.md.
+Creates LLM-summarized session log files directly in memory_dir/<epoch>.md.
 Skips trivial conversations that don't meet minimum thresholds.
 """
 
@@ -15,9 +15,7 @@ from helpers.print_style import PrintStyle
 def should_create_log(history_text: str, tool_call_count: int, config: dict, user_chars: int = 0) -> bool:
     """
     Returns True if this conversation meets the minimum threshold for a session log.
-    Checks user-authored content length (not total history which includes the AI's long responses).
     Threshold: (user_chars >= min_chars) OR (tool_calls >= min_tool_calls)
-    Falls back to total history length if user_chars not provided.
     """
     min_chars = int(config.get("memory_extract_min_chars", 200))
     min_tools = int(config.get("memory_extract_min_tool_calls", 2))
@@ -39,11 +37,10 @@ def count_tool_calls(history) -> int:
 
 
 def count_user_chars(history) -> int:
-    """Count characters in user-role messages only, to avoid counting AI responses."""
+    """Count characters in user-role messages only."""
     try:
         total = 0
         for msg in history:
-            # Agent Zero history messages have a role attribute
             role = getattr(msg, "role", None) or (msg.get("role") if isinstance(msg, dict) else None)
             if role in ("user", "human"):
                 content = getattr(msg, "content", None) or (msg.get("content") if isinstance(msg, dict) else str(msg))
@@ -55,45 +52,19 @@ def count_user_chars(history) -> int:
 
 async def create_session_log(
     agent,
-    history_text: str,
-    extraction: dict,
+    summary: str,
     memory_dir: str,
     config: dict,
 ) -> Optional[str]:
     """
-    Create a session log file for this conversation.
-    Returns the epoch string used as filename, or None if skipped.
+    Create a session log file at memory_dir/<epoch>.md.
+    Returns the epoch string used as filename, or None if failed.
     """
     epoch = str(int(time.time()))
-    sessions_dir = Path(memory_dir) / "sessions"
-    sessions_dir.mkdir(parents=True, exist_ok=True)
-    log_path = sessions_dir / f"{epoch}.md"
+    log_path = Path(memory_dir) / f"{epoch}.md"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
 
     now = datetime.now(timezone.utc).isoformat()
-    summary = extraction.get("session_summary", "No summary available.")
-
-    # Build Extracted To section
-    extracted_lines = []
-    if extraction.get("entities"):
-        names = [e.get("name", "?") for e in extraction["entities"]]
-        extracted_lines.append(f"- entities: {', '.join(names)}")
-    if extraction.get("episodes"):
-        titles = [e.get("title", "?") for e in extraction["episodes"]]
-        extracted_lines.append(f"- Episodes.md: {', '.join(titles)}")
-    if extraction.get("facts"):
-        extracted_lines.append(f"- Facts.md: {len(extraction['facts'])} fact(s)")
-    if extraction.get("procedure"):
-        titles = [p.get("title", "?") for p in extraction["procedure"]]
-        extracted_lines.append(f"- Procedure.md: {', '.join(titles)}")
-    if extraction.get("goals"):
-        titles = [g.get("title", "?") for g in extraction["goals"]]
-        extracted_lines.append(f"- Goals.md: {', '.join(titles)}")
-
-    extracted_section = "\n".join(extracted_lines) if extracted_lines else "- (nothing extracted)"
-
-    # Collect entity names and tags
-    entity_names = [e.get("name", "") for e in extraction.get("entities", [])]
-    tags = list({e.get("type", "") for e in extraction.get("entities", []) if e.get("type")})
 
     content = f"""---
 schema_version: 1
@@ -102,17 +73,12 @@ epoch: {epoch}
 date: "{now}"
 agent: agent_0
 summary: "{summary[:200].replace('"', "'")}"
-entities: {entity_names}
-tags: {tags}
 ---
 
 # Session {epoch}
 
 ## Summary
 {summary}
-
-## Extracted To
-{extracted_section}
 """
 
     try:

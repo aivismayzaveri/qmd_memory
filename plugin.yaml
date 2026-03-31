@@ -1,7 +1,7 @@
 name: qmd_memory
 title: QMD Memory System
-description: File-based structured memory system using QMD hybrid search engine for markdown-based persistent memory. Replaces FAISS vector store with human-readable category files.
-version: 1.0.0
+description: Session-based memory system using QMD hybrid search. Automatically summarizes each conversation and recalls relevant past sessions during future conversations.
+version: 2.0.0
 settings_sections:
   - agent
 per_project_config: true

@@ -27,18 +27,17 @@ class QmdMemoryInit(Extension):
 
         # Register memory dir as QMD collection (idempotent)
         try:
-            if not qmd_client.add_collection(memory_dir, config):
+            if qmd_client.add_collection(memory_dir, config):
+                # Register context description so QMD can guide LLM relevance decisions
+                qmd_client.add_context(
+                    qmd_client.MEMORY_COLLECTION_NAME,
+                    qmd_client.MEMORY_COLLECTION_CONTEXT,
+                    config,
+                )
+            else:
                 PrintStyle.warning("[QMD Memory] QMD collection registration failed — search may be unavailable")
         except Exception as e:
             PrintStyle.warning(f"[QMD Memory] Collection registration error: {e}")
-
-        # Register docs/ as a separate QMD collection so imported docs are searchable
-        try:
-            docs_dir = str(Path(memory_dir) / "docs")
-            if Path(docs_dir).exists():
-                qmd_client.add_collection(docs_dir, config)
-        except Exception as e:
-            PrintStyle.warning(f"[QMD Memory] Docs collection registration error: {e}")
 
         # Register any extra paths configured by the user
         extra_paths = config.get("memory_extra_paths", [])

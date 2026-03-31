@@ -35,6 +35,5 @@ class PrecompactCheck(Extension):
         loop_data.extras_temporary["precompact_warned"] = True
         loop_data.extras_temporary["precompact_reminder"] = (
             "**Memory notice:** This conversation is getting long and may be compacted soon. "
-            "If there are important facts, decisions, preferences, or knowledge from this conversation "
-            "that haven't been saved yet, use memory_save or memory_import before continuing."
+            "A session summary will be saved automatically when the conversation ends."
         )

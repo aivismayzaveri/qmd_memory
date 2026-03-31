@@ -1,7 +1,6 @@
 {
   "name": "qmd_engine",
   "version": "1.0.0",
-  "description": "",
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
@@ -11,5 +10,6 @@
   "license": "ISC",
   "dependencies": {
     "@tobilu/qmd": "^2.0.1"
-  }
+  },
+  "description": ""
 }

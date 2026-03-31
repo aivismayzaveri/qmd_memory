@@ -21,21 +21,42 @@ class Index(ApiHandler):
 
         memory_dir = input.get("memory_dir", DEFAULT_MEMORY_DIR)
 
+        # Register collection with name for qmd:// URI support
         if Path(memory_dir).exists():
             subprocess.run(
-                ["node", str(QMD_CLI), "collection", "add", memory_dir],
+                ["node", str(QMD_CLI), "collection", "add", memory_dir, "--name", "sessions"],
                 cwd=str(QMD_DIR),
                 capture_output=True,
                 text=True,
                 timeout=30,
             )
+            # Register context description (key QMD feature for LLM relevance)
+            subprocess.run(
+                ["node", str(QMD_CLI), "context", "add", "qmd://sessions",
+                 "Agent interaction summaries with structured epochs"],
+                cwd=str(QMD_DIR),
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
 
-        # Run update in background
-        subprocess.Popen(
+        # Step 1: rebuild BM25/text index (must complete before embedding)
+        r = subprocess.run(
             ["node", str(QMD_CLI), "update"],
+            cwd=str(QMD_DIR),
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if r.returncode != 0:
+            return {"ok": False, "error": f"qmd update failed: {r.stderr.strip()[:200]}"}
+
+        # Step 2: generate semantic embeddings for hybrid search
+        subprocess.Popen(
+            ["node", str(QMD_CLI), "embed"],
             cwd=str(QMD_DIR),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
 
-        return {"ok": True, "message": "Index rebuild started in background", "memory_dir": memory_dir}
+        return {"ok": True, "message": "Index rebuilt, embeddings generating in background", "memory_dir": memory_dir}

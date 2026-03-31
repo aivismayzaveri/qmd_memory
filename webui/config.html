@@ -9,21 +9,20 @@
             <div>
                 <div class="section-title">QMD Memory System</div>
                 <div class="section-description">
-                    Persistent, file-based memory with hybrid search (BM25 + semantic). Memories are stored as human-readable markdown files and recalled automatically during conversations.
-                    After changing settings, save and then run the <strong>Execute</strong> button to apply them (required if enabling GLinker for the first time).
+                    Session-based memory with hybrid search (BM25 + semantic). At the end of each conversation a summary is saved automatically and recalled in future conversations.
                 </div>
 
                 <!-- ── Memory Recall ──────────────────────────────────────── -->
                 <div class="section-title">Memory Recall</div>
                 <div class="section-description">
-                    Controls automatic recall — how often memories are searched and injected into the agent's context during a conversation.
+                    Controls automatic recall — how often past sessions are searched and injected into the agent's context during a conversation.
                 </div>
 
                 <div class="field">
                     <div class="field-label">
                         <div class="field-title">Enable automatic recall</div>
                         <div class="field-description">
-                            Search memory and inject relevant context every N iterations.
+                            Search past session summaries and inject relevant context every N iterations.
                         </div>
                     </div>
                     <div class="field-control">
@@ -38,7 +37,7 @@
                     <div class="field-label">
                         <div class="field-title">Recall interval (iterations)</div>
                         <div class="field-description">
-                            Run a memory search every N agent iterations. Lower = more frequent recall, higher token usage.
+                            Run a session search every N agent iterations. Lower = more frequent recall.
                         </div>
                     </div>
                     <div class="field-control">
@@ -50,7 +49,7 @@
                     <div class="field-label">
                         <div class="field-title">Max results per recall</div>
                         <div class="field-description">
-                            Maximum number of memory snippets injected per recall cycle.
+                            Maximum number of session snippets injected per recall cycle.
                         </div>
                     </div>
                     <div class="field-control">
@@ -60,9 +59,9 @@
 
                 <div class="field">
                     <div class="field-label">
-                        <div class="field-title">Token budget for recalled memories</div>
+                        <div class="field-title">Token budget for recalled sessions</div>
                         <div class="field-description">
-                            Recalled memories are truncated to stay within this token limit.
+                            Recalled session summaries are truncated to stay within this token limit.
                         </div>
                     </div>
                     <div class="field-control">
@@ -70,17 +69,17 @@
                     </div>
                 </div>
 
-                <!-- ── Memory Extraction ──────────────────────────────────── -->
-                <div class="section-title">Memory Extraction</div>
+                <!-- ── Session Extraction ─────────────────────────────────── -->
+                <div class="section-title">Session Extraction</div>
                 <div class="section-description">
-                    Controls what gets extracted and saved to memory at the end of each conversation.
+                    Controls when session summaries are created at the end of each conversation.
                 </div>
 
                 <div class="field">
                     <div class="field-label">
-                        <div class="field-title">Enable automatic extraction</div>
+                        <div class="field-title">Enable automatic session saving</div>
                         <div class="field-description">
-                            At the end of each conversation, use a utility LLM to extract and save structured memories.
+                            At the end of each conversation, use a utility LLM to write a session summary.
                         </div>
                     </div>
                     <div class="field-control">
@@ -93,13 +92,25 @@
 
                 <div class="field">
                     <div class="field-label">
-                        <div class="field-title">Min user message length to trigger extraction</div>
+                        <div class="field-title">Min user message length to trigger saving</div>
                         <div class="field-description">
-                            Skip extraction for very short conversations. Based on total user-message characters.
+                            Skip session saving for very short conversations. Based on total user-message characters.
                         </div>
                     </div>
                     <div class="field-control">
                         <input type="number" min="0" max="2000" step="50" x-model.number="config.memory_extract_min_chars" />
+                    </div>
+                </div>
+
+                <div class="field">
+                    <div class="field-label">
+                        <div class="field-title">Min tool calls to trigger saving</div>
+                        <div class="field-description">
+                            Also save a session if the agent made at least this many tool calls, even if the conversation was short.
+                        </div>
+                    </div>
+                    <div class="field-control">
+                        <input type="number" min="0" max="20" x-model.number="config.memory_extract_min_tool_calls" />
                     </div>
                 </div>
 
@@ -113,7 +124,7 @@
                     <div class="field-label">
                         <div class="field-title">Normalize search queries via LLM</div>
                         <div class="field-description">
-                            Before sending a manual <code>memory_search</code> query to QMD, strip noise words using a utility LLM. Fixes poor results from long natural-language queries. Recommended: on.
+                            Before sending a <code>memory_search</code> query to QMD, strip noise words using a utility LLM. Fixes poor results from long natural-language queries.
                         </div>
                     </div>
                     <div class="field-control">
@@ -128,7 +139,7 @@
                     <div class="field-label">
                         <div class="field-title">Temporal decay half-life (days)</div>
                         <div class="field-description">
-                            Recent memories rank higher. This controls how fast older memories decay in score. 30 days = a memory from 30 days ago scores at half of a fresh one.
+                            Recent sessions rank higher. 30 days = a session from 30 days ago scores at half of a fresh one.
                         </div>
                     </div>
                     <div class="field-control">
@@ -136,118 +147,23 @@
                     </div>
                 </div>
 
-                <!-- ── Entity Deduplication ───────────────────────────────── -->
-                <div class="section-title">Entity Deduplication</div>
-                <div class="section-description">
-                    Controls how duplicate entity profiles are detected and merged when saving to <code>entities/</code>.
-                    Three tiers: exact match → fuzzy string match → GLinker neural linking.
-                </div>
-
-                <div class="field">
-                    <div class="field-label">
-                        <div class="field-title">Fuzzy match threshold (Tier 1)</div>
-                        <div class="field-description">
-                            0–100. Lower = more aggressive merging (more false positives). Higher = stricter (more duplicate entities).
-                            Default 82. Catches variants like "vismay" → "Vismay Zaveri".
-                        </div>
-                    </div>
-                    <div class="field-control">
-                        <input type="number" min="50" max="100" x-model.number="config.entity_fuzzy_threshold" />
-                    </div>
-                </div>
-
-                <!-- GLinker section -->
-                <div class="field">
-                    <div class="field-label">
-                        <div class="field-title">Enable GLinker semantic linking (Tier 2)</div>
-                        <div class="field-description">
-                            Uses a neural model (~230 MB) to resolve entity variants with no string overlap — e.g. a GitHub username to a person's full name via their stored description.
-                            <strong>After enabling, run Execute to download the model.</strong>
-                            If disabled, only fuzzy matching (Tier 1) is used.
-                        </div>
-                    </div>
-                    <div class="field-control">
-                        <label class="toggle">
-                            <input type="checkbox" x-model="config.entity_glinker_enabled" />
-                            <span class="toggler"></span>
-                        </label>
-                    </div>
-                </div>
-
-                <template x-if="config.entity_glinker_enabled">
-                    <div>
-                        <div class="field">
-                            <div class="field-label">
-                                <div class="field-title">GLinker model</div>
-                                <div class="field-description">
-                                    Hugging Face model ID for entity linking. Default is the recommended base model (~230 MB).
-                                </div>
-                            </div>
-                            <div class="field-control">
-                                <input type="text"
-                                       x-model="config.entity_glinker_model"
-                                       placeholder="knowledgator/gliner-linker-base-v1.0" />
-                            </div>
-                        </div>
-
-                        <div class="field">
-                            <div class="field-label">
-                                <div class="field-title">GLinker device</div>
-                                <div class="field-description">
-                                    Inference device. Use <code>cpu</code> for most setups. Use <code>cuda</code> if a compatible GPU is available.
-                                </div>
-                            </div>
-                            <div class="field-control">
-                                <select x-model="config.entity_glinker_device">
-                                    <option value="cpu">cpu</option>
-                                    <option value="cuda">cuda</option>
-                                </select>
-                            </div>
-                        </div>
-
-                        <div class="field">
-                            <div class="field-label">
-                                <div class="field-title">GLinker acceptance threshold</div>
-                                <div class="field-description">
-                                    Minimum confidence score (0.0–1.0) to accept a GLinker match. Default 0.75. Lower = more aggressive linking (more false positives). The model's internal threshold is always 0.40; this is an additional filter applied on top.
-                                </div>
-                            </div>
-                            <div class="field-control">
-                                <input type="number" min="0.1" max="1.0" step="0.05" x-model.number="config.entity_glinker_threshold" />
-                            </div>
-                        </div>
-                    </div>
-                </template>
-
                 <!-- ── Storage ────────────────────────────────────────────── -->
                 <div class="section-title">Storage</div>
                 <div class="section-description">
-                    File storage settings for the memory system.
+                    File storage settings for session files.
                 </div>
 
                 <div class="field">
                     <div class="field-label">
                         <div class="field-title">Memory directory</div>
                         <div class="field-description">
-                            Absolute path where memory markdown files are stored.
+                            Absolute path where session markdown files are stored (e.g. <code>/a0/usr/memory/1774702399.md</code>).
                         </div>
                     </div>
                     <div class="field-control">
                         <input type="text"
                                x-model="config.memory_dir"
                                placeholder="/a0/usr/memory" />
-                    </div>
-                </div>
-
-                <div class="field">
-                    <div class="field-label">
-                        <div class="field-title">Auto-split file threshold (lines)</div>
-                        <div class="field-description">
-                            When a category file exceeds this many lines, it is automatically split into a subdirectory.
-                        </div>
-                    </div>
-                    <div class="field-control">
-                        <input type="number" min="100" max="2000" step="50" x-model.number="config.auto_split_threshold_lines" />
                     </div>
                 </div>
 

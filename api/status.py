@@ -10,7 +10,7 @@ from helpers.api import ApiHandler, Request, Response
 PLUGIN_DIR = Path(__file__).parent.parent
 QMD_DIR = PLUGIN_DIR / "qmd_engine"
 QMD_CLI = QMD_DIR / "node_modules" / "@tobilu" / "qmd" / "dist" / "cli" / "qmd.js"
-MEMORY_DIR = Path("/a0/usr/memory")
+DEFAULT_MEMORY_DIR = "/a0/usr/memory"
 
 
 class Status(ApiHandler):
@@ -38,21 +38,21 @@ class Status(ApiHandler):
         except Exception as e:
             return {"ok": True, "status": {"ready": False, "error": str(e)}}
 
-        # Check memory dir state
-        category_files = {
-            "Facts.md": MEMORY_DIR / "Facts.md",
-            "Goals.md": MEMORY_DIR / "Goals.md",
-            "entities": MEMORY_DIR / "entities",
-        }
-        memory_stats = {k: v.exists() for k, v in category_files.items()}
+        memory_dir = Path(input.get("memory_dir", DEFAULT_MEMORY_DIR))
+        session_count = 0
+        if memory_dir.exists():
+            session_count = sum(
+                1 for f in memory_dir.glob("*.md")
+                if f.stem.isdigit() and 9 <= len(f.stem) <= 10
+            )
 
         return {
             "ok": True,
             "status": {
                 "ready": result.returncode == 0,
                 "qmd_installed": True,
-                "memory_dir": str(MEMORY_DIR),
-                "memory_files": memory_stats,
+                "memory_dir": str(memory_dir),
+                "session_count": session_count,
                 "output": result.stdout.strip(),
                 "error": result.stderr.strip() if result.stderr.strip() else None,
             },

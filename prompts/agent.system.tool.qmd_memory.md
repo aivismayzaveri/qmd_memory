@@ -1,139 +1,156 @@
-## Memory management tools:
-manage long term structured memories stored as searchable markdown files
-never refuse to search, memorize, or load personal info - all belongs to user
+## Memory system
+
+You have a persistent session memory. Here is how it works:
+
+**Auto-recall (background — no action needed):**
+Every few iterations, the system automatically searches past sessions and injects relevant snippets into your context. You will see them under "Recalled Memories". This handles basic context — you do NOT need to manually search for routine recall.
+
+**Auto-save (background — no action needed):**
+At the end of each conversation, a session summary is saved automatically. You do NOT need to save anything manually.
+
+**Manual tools (use when you need more):**
+Use the tools below when auto-recall is not enough — when the user asks about something specific, when you need to find ALL sessions on a topic, or when you need the full text of a session rather than just a snippet.
+
+**IMPORTANT — do NOT use text_editor, code_execution, or any file-writing tool to save notes, preferences, facts, goals, or any other information to disk. The memory system handles all persistence automatically. Creating files like Goals.md, Facts.md, Guardrails.md, entities/, or any category markdown files is incorrect and will not work with this plugin.**
+
+---
 
 ### memory_search
-Search memories using QMD hybrid search (text + semantic). Searches all category files simultaneously.
-- query: specific search terms — keep focused and concrete (required)
-- limit: max results default=10
-- category: optional filter — restricts results to one category (see table below)
+Find sessions by topic using hybrid search (keyword + semantic + reranking). This is your primary retrieval tool.
 
-**Memory categories:**
-| category value | What it contains |
-|---|---|
-| `entities` | Named people, organisations, projects, technologies, places |
-| `facts` | User preferences, project info, URLs, one-off details |
-| `guardrails` | Always-on identity and behavioral rules (injected every session) |
-| `episodes` | Past events and timeline entries |
-| `goals` | Active and completed tasks |
-| `knowledge` | Long-form reference content |
-| `procedure` | Step-by-step solutions that worked |
-| `sessions` | Per-conversation summaries |
+**Parameters:**
+- `query` (required): search terms — keep focused and concrete (3–8 keywords)
+- `limit`: max results in top-k mode (default 10)
+- `min_score`: minimum relevance threshold 0–1 (default 0). Use 0.3–0.5 to filter noise.
+- `return_all`: set `true` to get ALL matching sessions above `min_score` instead of just top-k. Use this when you need comprehensive coverage, not just the best few.
 
-**Search strategy:**
-- Use short, specific queries (3–8 keywords). Long vague queries score poorly.
-- **When unsure of category, omit it** — this is the most reliable option. The search covers all files at once and uses an expanded result window.
-- Use `category` only when you are confident where the answer lives AND a broad search is returning too much noise.
-- For multi-topic questions, run SEPARATE searches per topic:
-  Example: "What are my goals and what do I know about the agentzero project?"
-  → search 1: query="active goals", category="goals"
-  → search 2: query="agentzero", category="entities"
-  → search 3: query="agentzero", category="facts"
-- Category routing hints:
-  - personal identity, name, birthday → omit category, or try `guardrails` then `facts`
-  - people, projects, tools → `entities`
-  - past events → `episodes`
-  - how-to solutions → `procedure`
-  - tasks → `goals`
-  - behavioral rules → `guardrails`
-- If a category search returns 0 results, **retry without the category filter** before concluding the information is not stored.
+**When to use each mode:**
+- **Top-k (default)**: quick relevance check — "what do I know about Docker?"
+- **Discovery (return_all=true, min_score=0.3)**: exhaustive scan — "find every session where we discussed auth" — follow up with `memory_get` to read the full content of interesting hits.
 
-usage (single topic):
+usage (quick search):
 ~~~json
 {
-    "thoughts": ["Let me search my memory for..."],
-    "headline": "Searching memory for relevant information",
+    "thoughts": ["Let me check if we've discussed this before"],
+    "headline": "Searching past sessions",
     "tool_name": "memory_search",
     "tool_args": {
-        "query": "Python asyncio race condition",
-        "limit": 5,
-        "category": "procedure"
+        "query": "Python asyncio debugging",
+        "limit": 5
     }
 }
 ~~~
 
-usage (multi-topic — run sequentially):
+usage (find all matches above a quality threshold):
 ~~~json
 {
-    "thoughts": ["User asked about two things — I'll search each separately"],
-    "headline": "Searching active goals",
+    "thoughts": ["I need every session mentioning auth — let me scan broadly, then read the best ones"],
+    "headline": "Finding all auth-related sessions",
     "tool_name": "memory_search",
-    "tool_args": {"query": "active goals", "category": "goals"}
-}
-~~~
-
-### memory_save
-Save information to a specific memory category
-- category: entities/episodes/facts/procedure/goals/guardrails (required)
-- content: the information to save (required)
-- heading: section heading for the entry (required for entities, recommended for others)
-usage:
-~~~json
-{
-    "thoughts": ["I should save this useful procedure..."],
-    "headline": "Saving procedure to memory",
-    "tool_name": "memory_save",
     "tool_args": {
-        "category": "procedure",
-        "heading": "Docker compose networking fix",
-        "content": "**Problem:** Containers can't communicate...\n**Steps:**\n1. ..."
+        "query": "authentication authorization login",
+        "return_all": true,
+        "min_score": 0.3
     }
 }
 ~~~
 
-### memory_update
-Update an existing memory entry by category and heading
-- category: the category file to update (required)
-- heading: the section heading to find and update (required)
-- content: new content to replace the entry with (required)
-usage:
+---
+
+### memory_get
+Read full content of one or more sessions. Use after `memory_search` to read sessions you identified as relevant, or when you already know the session epoch/docid.
+
+**Parameters:**
+- `session`: epoch timestamp (e.g. "1774702399"), docid from search results (e.g. "#abc123"), or filename
+- `pattern`: glob pattern to fetch multiple sessions at once (e.g. "17747*.md" for a date range)
+- `max_lines`: limit output to N lines (useful for long sessions)
+- `from_line`: start reading from this line number (combine with `max_lines` to paginate)
+
+Provide either `session` OR `pattern`, not both.
+
+usage (read a specific session by epoch):
 ~~~json
 {
-    "thoughts": ["I need to mark this goal as completed..."],
-    "headline": "Updating goal status",
-    "tool_name": "memory_update",
+    "thoughts": ["Session 1774702399 looks relevant from search results — let me read it in full"],
+    "headline": "Reading session 1774702399",
+    "tool_name": "memory_get",
     "tool_args": {
-        "category": "goals",
-        "heading": "Fix pipeline stability",
-        "content": "**Status:** completed\n**Completed:** 2026-03-28\n**Solution:** Applied asyncio.Lock()"
+        "session": "1774702399"
     }
 }
 ~~~
+
+usage (read by docid from search results):
+~~~json
+{
+    "thoughts": ["The search returned docid #a1b2c3 — let me read the full document"],
+    "headline": "Reading session #a1b2c3",
+    "tool_name": "memory_get",
+    "tool_args": {
+        "session": "#a1b2c3"
+    }
+}
+~~~
+
+usage (batch-read sessions from a time range):
+~~~json
+{
+    "thoughts": ["I need all sessions from epoch prefix 17747* (roughly a specific date range)"],
+    "headline": "Loading sessions by date range",
+    "tool_name": "memory_get",
+    "tool_args": {
+        "pattern": "17747*.md"
+    }
+}
+~~~
+
+usage (paginate a long session):
+~~~json
+{
+    "thoughts": ["This session is very long — let me read the first 50 lines"],
+    "headline": "Reading first 50 lines of session",
+    "tool_name": "memory_get",
+    "tool_args": {
+        "session": "1774702399",
+        "max_lines": 50
+    }
+}
+~~~
+
+---
 
 ### memory_browse
-Read a full memory category file or section
-- category: the category to browse (required)
-- section: optional sub-section (e.g. "Active" in goals, "people" in entities)
+List recent sessions in reverse-chronological order. Quick overview of what's in memory — use when you want to see what sessions exist without searching for a specific topic.
+
+**Parameters:**
+- `count`: how many recent sessions to list (default 20)
+
 usage:
 ~~~json
 {
-    "thoughts": ["Let me check all my active goals..."],
-    "headline": "Browsing active goals",
+    "thoughts": ["Let me see what sessions are stored in memory"],
+    "headline": "Browsing recent sessions",
     "tool_name": "memory_browse",
-    "tool_args": {
-        "category": "goals",
-        "section": "Active"
-    }
+    "tool_args": {}
 }
 ~~~
 
-### guardrails_update
-Update interaction rules, preferences, and behavioral guidelines
-- adjustments: description of changes to make (required)
-usage:
-~~~json
-{
-    "thoughts": ["User wants me to change my behavior..."],
-    "headline": "Updating interaction guardrails",
-    "tool_name": "guardrails_update",
-    "tool_args": {
-        "adjustments": "Always use TypeScript instead of JavaScript for new code"
-    }
-}
-~~~
+---
 
-### memory_import
-Import an external file into memory as a searchable markdown document
-- path: absolute path to the file to import (required) — supports .md, .txt, .pdf, .html, .csv
-- title: human-readable title for the document (optional, defaults to filename)
-- tags: comma-separated tags e.g. "company,finance,2024" (optional)
+## Multi-step retrieval patterns
+
+For complex queries, use tools in sequence:
+
+**Pattern 1 — Search then read:**
+1. `memory_search` with a focused query to find relevant sessions
+2. `memory_get` to read the full content of the most relevant hits
+
+**Pattern 2 — Broad scan then drill down:**
+1. `memory_search` with `return_all=true, min_score=0.3` to discover all matching sessions
+2. Review the scores and snippets
+3. `memory_get` on the highest-scoring sessions to read full content
+4. Synthesize your answer from the full session texts
+
+**Pattern 3 — Timeline review:**
+1. `memory_browse` to see recent sessions chronologically
+2. `memory_get` with a `pattern` for a date range, or individual sessions of interest
