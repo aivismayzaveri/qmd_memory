@@ -89,6 +89,21 @@ class RecallMemories(Extension):
             limit = int(config.get("memory_recall_max_results", 8))
             results = qmd_client.search(query, config, limit=limit)
 
+            # Exclude session files written during the current session.
+            # monologue_start stores the session start epoch in agent.data so we
+            # can compare against the epoch embedded in each result's filename.
+            # If the key isn't set yet (edge case), the filter is skipped safely.
+            session_start = self.agent.get_data("_qmd_session_start_epoch")
+            if session_start:
+                import re as _re
+                def _epoch_from_path(p: str) -> int:
+                    m = _re.search(r'[/\\](\d{9,10})\.md$', p)
+                    return int(m.group(1)) if m else 0
+                results = [
+                    r for r in results
+                    if _epoch_from_path(r.get("path", "") or r.get("file", "")) < session_start
+                ]
+
             if not results:
                 log_item.update(heading="No memories found")
                 return

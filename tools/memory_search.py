@@ -61,6 +61,20 @@ class MemorySearch(Tool):
             if min_score > 0:
                 results = [r for r in results if r.get("score", 0) >= min_score]
 
+        # ── Exclude current-session files ─────────────────────────────────
+        # Session files written during this conversation match the current
+        # query text perfectly but are useless (circular self-reference).
+        session_start = self.agent.get_data("_qmd_session_start_epoch")
+        if session_start:
+            import re as _re
+            def _epoch_from_path(p: str) -> int:
+                m = _re.search(r'[/\\](\d{9,10})\.md$', p)
+                return int(m.group(1)) if m else 0
+            results = [
+                r for r in results
+                if _epoch_from_path(r.get("path", "") or r.get("file", "")) < session_start
+            ]
+
         # ── No results ────────────────────────────────────────────────────
         if not results:
             hint = f" (searched: `{normalized_query}`)" if normalized_query != raw_query else ""

@@ -1,3 +1,5 @@
+import time
+
 from helpers.extension import Extension
 from helpers import plugins
 from helpers.print_style import PrintStyle
@@ -58,6 +60,16 @@ class QmdMemoryInit(Extension):
             qmd_client.reindex_async(config)
         except Exception as e:
             PrintStyle.warning(f"[QMD Memory] Reindex trigger failed: {e}")
+
+        # Record session start time so recall can exclude files written this session.
+        # Set only ONCE per conversation (when agent.data is empty at conversation start).
+        # Must NOT reset on subsequent monologue_start calls (= subsequent user turns)
+        # because monologue_end writes a session file between turns, and resetting the
+        # epoch would let those intra-conversation files slip through the recall filter.
+        # New conversations get a fresh Agent with self.data={}, so the epoch is set anew.
+        # Restored conversations keep their original epoch via persist_chat deserialization.
+        if self.agent.get_data("_qmd_session_start_epoch") is None:
+            self.agent.set_data("_qmd_session_start_epoch", int(time.time()))
 
     def _resolve_memory_dir(self, config: dict) -> str:
         """Resolve the effective memory directory, supporting per-agent isolation."""

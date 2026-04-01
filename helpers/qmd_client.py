@@ -17,6 +17,7 @@ Command mapping (from QMD docs):
 
 import json
 import math
+import os
 import subprocess
 import threading
 from pathlib import Path
@@ -34,18 +35,30 @@ _reindex_lock = threading.Lock()
 MEMORY_COLLECTION_NAME = "sessions"
 MEMORY_COLLECTION_CONTEXT = "Agent interaction summaries with structured epochs"
 
+# agent.data key used to share the session-start epoch between monologue_start
+# and message_loop_prompts_after hooks.
+SESSION_START_EPOCH_KEY = "_qmd_session_start_epoch"
+
+
+def extract_epoch_from_path(path: str) -> int | None:
+    """
+    Return the Unix epoch embedded in a session filename, or None.
+
+    Session files are named <epoch>.md where epoch is a 9-10 digit integer,
+    e.g. /a0/usr/memory/1740123456.md or qmd://sessions/1740123456.md.
+    """
+    import re
+    m = re.search(r'[/\\](\d{9,10})\.md$', path)
+    return int(m.group(1)) if m else None
+
 
 def _extract_age_days(result: dict) -> float | None:
     """Extract age in days from a search result. Returns None if unknown."""
-    import re
     from datetime import datetime, timezone
 
     path = result.get("path", "") or result.get("file", "")
-
-    # Session files are epoch-named: <epoch>.md (9-10 digit numeric stem)
-    m = re.search(r'[/\\](\d{9,10})\.md$', path)
-    if m:
-        epoch = int(m.group(1))
+    epoch = extract_epoch_from_path(path)
+    if epoch is not None:
         now_epoch = datetime.now(timezone.utc).timestamp()
         return max(0, (now_epoch - epoch) / 86400)
 
@@ -118,6 +131,76 @@ def _get_qmd_cli(config: dict) -> tuple[Path, Path]:
     return engine_dir, cli
 
 
+_detected_gpu_backend: str | None = None
+
+
+def _detect_gpu_backend() -> str:
+    """
+    Probe for a usable GPU backend and return a NODE_LLAMA_CPP_GPU value.
+
+    Returns "cuda", "vulkan", or "false" (CPU-only).
+
+    Why explicit detection instead of "auto":
+      node-llama-cpp's "auto" mode, combined with build="autoAttempt", tries
+      to compile Vulkan from source when the prebuilt binary is incompatible.
+      That build fails in Docker/WSL2 when the Vulkan SDK is not installed,
+      producing CMake errors.  "false" skips all build attempts cleanly.
+    """
+    import shutil
+
+    # ── NVIDIA / CUDA ─────────────────────────────────────────────────────────
+    if (os.path.exists("/dev/nvidia0")
+            or os.path.exists("/proc/driver/nvidia/version")
+            or shutil.which("nvidia-smi")):
+        try:
+            r = subprocess.run(
+                ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                return "cuda"
+        except Exception:
+            pass
+
+    # ── Vulkan (AMD / Intel / software renderer) ───────────────────────────────
+    # Require both the ICD loader library AND at least one driver ICD JSON.
+    _vulkan_libs = [
+        "/usr/lib/x86_64-linux-gnu/libvulkan.so.1",
+        "/usr/lib/libvulkan.so.1",
+        "/usr/local/lib/libvulkan.so.1",
+    ]
+    _vulkan_icd_dirs = ["/etc/vulkan/icd.d", "/usr/share/vulkan/icd.d"]
+    lib_ok = any(os.path.exists(p) for p in _vulkan_libs)
+    icd_ok = any(
+        os.path.isdir(d)
+        and any(f.endswith(".json") for f in os.listdir(d))
+        for d in _vulkan_icd_dirs
+        if os.path.isdir(d)
+    )
+    if lib_ok and icd_ok:
+        return "vulkan"
+
+    # ── CPU fallback ──────────────────────────────────────────────────────────
+    return "false"
+
+
+def _qmd_env() -> dict:
+    """
+    Build env for QMD subprocess calls with GPU backend resolved once per process.
+    Falls back to CPU ("false") when no GPU is available, preventing
+    node-llama-cpp from attempting a source build that would fail.
+    """
+    global _detected_gpu_backend
+    if _detected_gpu_backend is None:
+        if "NODE_LLAMA_CPP_GPU" in os.environ:
+            _detected_gpu_backend = os.environ["NODE_LLAMA_CPP_GPU"]
+        else:
+            _detected_gpu_backend = _detect_gpu_backend()
+    env = os.environ.copy()
+    env["NODE_LLAMA_CPP_GPU"] = _detected_gpu_backend
+    return env
+
+
 def _run(args: list[str], cwd: Path, timeout: int = 10) -> subprocess.CompletedProcess | None:
     """Run a subprocess, return None on failure."""
     try:
@@ -127,6 +210,7 @@ def _run(args: list[str], cwd: Path, timeout: int = 10) -> subprocess.CompletedP
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=_qmd_env(),
         )
     except subprocess.TimeoutExpired:
         PrintStyle.warning(f"[QMD Memory] Command timed out: {' '.join(str(a) for a in args[:4])}")
@@ -411,6 +495,7 @@ def _do_reindex(config: dict) -> None:
             capture_output=True,
             text=True,
             timeout=120,
+            env=_qmd_env(),
         )
         if r.returncode != 0:
             PrintStyle.warning(f"[QMD Memory] qmd update failed: {r.stderr[:200]}")
@@ -422,7 +507,8 @@ def _do_reindex(config: dict) -> None:
             cwd=str(engine_dir),
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=300,
+            env=_qmd_env(),
         )
     except Exception as e:
         PrintStyle.warning(f"[QMD Memory] Reindex failed: {e}")
