@@ -67,6 +67,9 @@ For complex queries, the agent uses tools in sequence:
 ### Ingestion (setup + after each session write)
 
 ```bash
+# Download embedding, query expansion, and reranker models
+qmd pull
+
 # Register the session collection
 qmd collection add /a0/usr/memory --name sessions
 
@@ -129,11 +132,14 @@ All settings are available in the plugin UI. Key options:
 1. Install the plugin in Agent Zero
 2. Click **Execute** once to:
    - Install global `qmd` CLI wrapper
+   - Download models (embedding, query expansion, reranker) via `qmd pull`
    - Register session collection with QMD
    - Register collection context for LLM relevance
    - Build BM25 text index
    - Generate semantic embeddings
 3. Start chatting — sessions are saved and recalled automatically
+
+> **GPU support:** The setup script probes for CUDA/Vulkan at runtime and sets `NODE_LLAMA_CPP_GPU` explicitly. Falls back to CPU-only (`false`) when neither is available, avoiding CMake/Vulkan SDK build errors in Docker/WSL2 environments.
 
 ---
 
